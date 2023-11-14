@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"autoSignIn/src/config"
@@ -30,14 +31,39 @@ type juejinResp struct {
 	Data interface{} `json:"data"`
 }
 
-func sendRequest(url, method string, postData io.Reader) *juejinResp {
-	req, err := http.NewRequest(method, url, postData)
+func sendRequest(reqUrl, method string, postData io.Reader) *juejinResp {
+	req, err := http.NewRequest(method, reqUrl, postData)
 	if err != nil {
 		log.Fatalf("failed NewRequest: %v", err)
 	}
 	for k, v := range Header {
 		req.Header.Set(k, v)
 	}
+	q := req.URL.Query()
+	cookies := strings.Split(config.Cfg.Cookies.JueJin, ";")
+	var aid, uid string
+	for _, cookie := range cookies {
+		cookie = strings.TrimSpace(cookie)
+		if strings.HasPrefix(cookie, "__tea_cookie_tokens_") {
+			s := strings.Split(cookie, "=")
+			aid = strings.TrimPrefix(s[0], "__tea_cookie_tokens_")
+			if d1v, err := url.QueryUnescape(s[1]) ; err != nil {
+				return nil
+			} else {
+				if d2v, err := url.QueryUnescape(d1v) ; err != nil {
+					return nil
+				} else {
+					var d2vJson map[string]string
+					json.Unmarshal([]byte(d2v), &d2vJson)
+					uid = d2vJson["user_unique_id"]
+				}
+			}
+			break
+		}
+	}
+	q.Add("aid", aid)
+	q.Add("uuid", uid)
+	req.URL.RawQuery = q.Encode()
 	req.Header.Set("Cookie", config.Cfg.Cookies.JueJin)
 	client := http.Client{}
 	resp, err := client.Do(req)
@@ -91,9 +117,12 @@ func lottery() string {
 }
 
 func dipLucky() string {
-	resp := sendRequest(globalBigUrl, "POST", strings.NewReader(""))
+	dipId := getDipluckId()
+	if dipId == "" {
+		return "获取要沾的id失败"
+	}
 	postData := map[string]interface{}{
-		"lottery_history_id": resp.Data.(map[string]interface{})["lotteries"].([]interface{})[0].(map[string]interface{})["history_id"]}
+		"lottery_history_id": dipId}
 	if jsonBytes, err := json.Marshal(postData); err == nil {
 		resp := sendRequest(dipLuckyUrl, "POST", bytes.NewReader(jsonBytes))
 		if resp.Data == nil {
@@ -106,12 +135,28 @@ func dipLucky() string {
 	return "出错了"
 }
 
+func getDipluckId() string {
+	postData := map[string]interface{}{"page_no": 1, "page_size": 5}
+	if jsonBytes, err := json.Marshal(postData); err == nil {
+		resp := sendRequest(globalBigUrl, "POST", bytes.NewReader(jsonBytes))
+		if resp.Data == nil {
+			return ""
+		}
+		return resp.Data.(map[string]interface{})["lotteries"].([]interface{})[0].(map[string]interface{})["history_id"].(string)
+	}
+	return ""
+}
+
 func RunTask() string {
+	checkIn := checkIn()
+	point := getCurPoint()
+	lottery := lottery()
+	lucky := dipLucky()
 	return fmt.Sprintf(`
 【掘金】
 当前矿石数量: %s
 自动签到结果: %s
 自动抽奖结果: %s
 沾幸运值结果: %s`,
-		getCurPoint(), checkIn(), lottery(), dipLucky())
+		point, checkIn, lottery, lucky)
 }
